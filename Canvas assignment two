@@ -1,0 +1,399 @@
+import matplotlib.pyplot as plt
+import pandas as pd
+from scipy.sparse import csr_matrix, hstack
+from sklearn.feature_extraction.text import HashingVectorizer
+from sklearn.feature_extraction.text import TfidfTransformer
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+
+from my_measures import BinaryClassificationPerformance
+
+
+# Function for feature building and extraction on natural language data
+# function that takes raw data and completes all preprocessing required before model fits
+def process_raw_data(fn, my_random_seed, test=False):
+    # read and summarize data
+    toxic_data = pd.read_csv(fn)
+    if (not test):
+        # add an indicator for any toxic, severe toxic, obscene, threat, insult, or indentity hate
+        toxic_data['any_toxic'] = (
+                toxic_data['toxic'] + toxic_data['severe_toxic'] + toxic_data['obscene'] + toxic_data['threat'] +
+                toxic_data['insult'] + toxic_data['identity_hate'] > 0)
+    print("toxic_data is:", type(toxic_data))
+    print("toxic_data has", toxic_data.shape[0], "rows and", toxic_data.shape[1], "columns", "\n")
+    print("the data types for each of the columns in toxic_data:")
+    print(toxic_data.dtypes, "\n")
+    print("the first 10 rows in toxic_data:")
+    print(toxic_data.head(5))
+
+    if (not test):
+        print("The rate of 'toxic' Wikipedia comments in the dataset: ")
+        print(toxic_data['any_toxic'].mean())
+
+    # vectorize Bag of Words from review text; as sparse matrix
+    if (not test):  # fit_transform()
+        hv = HashingVectorizer(n_features=2 ** 17, alternate_sign=False)
+        X_hv = hv.fit_transform(toxic_data.comment_text)
+        fitted_transformations.append(hv)
+        print("Shape of HashingVectorizer X:")
+        print(X_hv.shape)
+    else:  # transform()
+        X_hv = fitted_transformations[0].transform(toxic_data.comment_text)
+        print("Shape of HashingVectorizer X:")
+        print(X_hv.shape)
+
+    # http://scikit-learn.org/stable/modules/generated/sklearn.feature_extraction.text.TfidfTransformer.html
+    if (not test):
+        transformer = TfidfTransformer()
+        X_tfidf = transformer.fit_transform(X_hv)
+        fitted_transformations.append(transformer)
+    else:
+        X_tfidf = fitted_transformations[1].transform(X_hv)
+
+    # create additional quantitative features
+    # features from Amazon.csv to add to feature set
+    toxic_data['word_count'] = toxic_data['comment_text'].str.split(' ').str.len()
+    toxic_data['punc_count'] = toxic_data['comment_text'].str.count("\.")
+
+    X_quant_features = toxic_data[["word_count", "punc_count"]]
+    print("Look at a few rows of the new quantitative features: ")
+    print(X_quant_features.head(10))
+
+    # feature that identifies comments containing the word "fuck" as toxic
+    toxic_data['contains_fuck'] = toxic_data['comment_text'].str.contains('fuck', case=False, regex=False)
+    toxic_data['contains_fuck'] = toxic_data['contains_fuck'].astype(int)
+    print("The rate of 'fuck' in the dataset: ")
+    print(toxic_data['contains_fuck'].mean())
+
+    # Combine all quantitative features into a single sparse matrix
+
+    X_quant_features_csr = csr_matrix(X_quant_features)
+    X_fuck = csr_matrix(toxic_data['contains_fuck']).transpose()
+    X_combined = hstack([X_tfidf, X_quant_features_csr, X_fuck])
+    X_matrix = csr_matrix(X_combined)  # convert to sparse matrix
+    print("Size of combined bag of words and new quantitative variables matrix:")
+    print(X_matrix.shape)
+
+    # scatter plot for the relation between "fuck" and toxic data
+    toxic_fuck = toxic_data[toxic_data['toxic'] == 1]
+    non_toxic_fuck = toxic_data[toxic_data['toxic'] == 0]
+
+    plt.scatter(non_toxic_fuck['contains_fuck'], non_toxic_fuck['toxic'], c='b', label='Non-toxic')
+    plt.scatter(toxic_fuck['contains_fuck'], toxic_fuck['toxic'], c='r', label='Toxic')
+
+    plt.xlabel('Contains the word "fuck"')
+    plt.ylabel('Toxic')
+    plt.legend()
+    plt.show()
+
+    # bar graph to illustrate the proportion of toxic and non-toxic comments that contain "fuck"
+    contains_fuck_toxic = toxic_data.loc[toxic_data['toxic'] == 1, 'contains_fuck'].mean()
+    contains_fuck_non_toxic = toxic_data.loc[toxic_data['toxic'] == 0, 'contains_fuck'].mean()
+
+    fig, ax = plt.subplots()
+    ax.bar(['Toxic', 'Non-Toxic'], [contains_fuck_toxic, contains_fuck_non_toxic])
+    ax.set_ylabel('Proportion of Comments containing "fuck"')
+    ax.set_title('Relationship between "fuck" and Toxicity')
+    plt.show()
+
+    # Create `X`, scaled matrix of features
+    # feature scaling
+    if (not test):
+        sc = StandardScaler(with_mean=False)
+        X = sc.fit_transform(X_matrix)
+        fitted_transformations.append(sc)
+        print(X.shape)
+        y = toxic_data['any_toxic']
+    else:
+        X = fitted_transformations[2].transform(X_matrix)
+        print(X.shape)
+
+    # Create Training and Test Sets
+    # enter an integer for the random_state parameter; any integer will work
+    if (test):
+        X_submission_test = X
+        print("Shape of X_test for submission:")
+        print(X_submission_test.shape)
+        print('SUCCESS!')
+        return (toxic_data, X_submission_test)
+    else:
+        X_train, X_test, y_train, y_test, X_raw_train, X_raw_test = train_test_split(X, y, toxic_data, test_size=0.2,
+                                                                                     random_state=my_random_seed)
+        print("Shape of X_train and X_test:")
+        print(X_train.shape)
+        print(X_test.shape)
+        print("Shape of y_train and y_test:")
+        print(y_train.shape)
+        print(y_test.shape)
+        print("Shape of X_raw_train and X_raw_test:")
+        print(X_raw_train.shape)
+        print(X_raw_test.shape)
+        print('SUCCESS!')
+        return (X_train, X_test, y_train, y_test, X_raw_train, X_raw_test)
+
+
+# Create training and test sets from function
+
+# create an empty list to store any use of fit_transform() to transform() later
+# it is a global list to store model and feature extraction fits
+fitted_transformations = []
+
+# CHANGE FILE PATH and my_random_seed number (any integer other than 74 will do):
+X_train, X_test, y_train, y_test, X_raw_train, X_raw_test = process_raw_data(fn='toxiccomments_train.csv',
+                                                                             my_random_seed=99)
+
+print("Number of fits stored in `fitted_transformations` list: ")
+print(len(fitted_transformations))
+
+# Fit (and tune) Various Models
+
+# MODEL: ordinary least squares
+
+# from sklearn import linear_model
+# ols = linear_model.SGDClassifier(loss="log_loss")
+# ols.fit(X_train, y_train)
+#
+# ols_performance_train = BinaryClassificationPerformance(ols.predict(X_train), y_train, 'ols_train')
+# ols_performance_train.compute_measures()
+# print(ols_performance_train.performance_measures)
+# print("MODEL Train: ordinary least squares")
+# print("\n* * * * * *")
+
+# MODEL: SVM, linear
+
+# from sklearn import linear_model
+# svm = linear_model.SGDClassifier()
+# svm.fit(X_train, y_train)
+#
+# svm_performance_train = BinaryClassificationPerformance(svm.predict(X_train), y_train, 'svm_train')
+# svm_performance_train.compute_measures()
+# print(svm_performance_train.performance_measures)
+# print("MODEL Train: SVM linear")
+# print("\n* * * * * *")
+
+# MODEL: logistic regression
+
+# from sklearn import linear_model
+# lgs = linear_model.SGDClassifier(loss='log')
+# lgs.fit(X_train, y_train)
+#
+# lgs_performance_train = BinaryClassificationPerformance(lgs.predict(X_train), y_train, 'lgs_train')
+# lgs_performance_train.compute_measures()
+# print(lgs_performance_train.performance_measures)
+# print("MODEL Train: logistic regression")
+# print("\n* * * * * *")
+
+# MODEL: Naive Bayes
+#
+# from sklearn.naive_bayes import MultinomialNB
+# nbs = MultinomialNB()
+# nbs.fit(X_train, y_train)
+#
+# nbs_performance_train = BinaryClassificationPerformance(nbs.predict(X_train), y_train, 'nbs_train')
+# nbs_performance_train.compute_measures()
+# print(nbs_performance_train.performance_measures)
+# print("MODEL Train: Naive Bayes")
+# print("\n* * * * * *")
+
+# MODEL: Perceptron
+
+# from sklearn import linear_model
+# prc = linear_model.SGDClassifier(loss='perceptron')
+# prc.fit(X_train, y_train)
+#
+# prc_performance_train = BinaryClassificationPerformance(prc.predict(X_train), y_train, 'prc_train')
+# prc_performance_train.compute_measures()
+# print(prc_performance_train.performance_measures)
+# print("MODEL Train: Perceptron")
+# print("\n* * * * * *")
+
+# MODEL: Ridge Regression Classifier
+
+print("Model setup")
+from sklearn import linear_model
+
+rdg = linear_model.RidgeClassifier()
+rdg.fit(X_train, y_train)
+
+rdg_performance_train = BinaryClassificationPerformance(rdg.predict(X_train), y_train, 'rdg_train')
+rdg_performance_train.compute_measures()
+print(rdg_performance_train.performance_measures)
+print("MODEL Train: Ridge Regression Classifier — Default Alpha")
+print("\n* * * * * *")
+
+rdg_alpha_100 = linear_model.RidgeClassifier(alpha=100)
+rdg_alpha_100.fit(X_train, y_train)
+
+rdg_performance_train_100 = BinaryClassificationPerformance(rdg_alpha_100.predict(X_train), y_train, 'rdg_train')
+rdg_performance_train_100.compute_measures()
+print(rdg_performance_train_100.performance_measures)
+print("MODEL Train: Ridge Regression Classifier — Alpha = 100")
+print("\n* * * * * *")
+
+rdg_alpha_1000 = linear_model.RidgeClassifier(alpha=1000)
+rdg_alpha_1000.fit(X_train, y_train)
+
+rdg_performance_train_1000 = BinaryClassificationPerformance(rdg_alpha_1000.predict(X_train), y_train, 'rdg_train')
+rdg_performance_train_1000.compute_measures()
+print(rdg_performance_train_100.performance_measures)
+print("MODEL Train: Ridge Regression Classifier — Alpha = 1,000")
+print("\n* * * * * *")
+
+rdg_alpha_10000 = linear_model.RidgeClassifier(alpha=10000)
+rdg_alpha_10000.fit(X_train, y_train)
+
+rdg_performance_train_10000 = BinaryClassificationPerformance(rdg_alpha_10000.predict(X_train), y_train, 'rdg_train')
+rdg_performance_train_10000.compute_measures()
+print(rdg_performance_train_100.performance_measures)
+print("MODEL Train: Ridge Regression Classifier — Alpha = 10,000")
+print("\n* * * * * *")
+
+rdg_alpha_100000 = linear_model.RidgeClassifier(alpha=100000)
+rdg_alpha_100000.fit(X_train, y_train)
+
+rdg_performance_train_100000 = BinaryClassificationPerformance(rdg_alpha_100000.predict(X_train), y_train, 'rdg_train')
+rdg_performance_train_100000.compute_measures()
+print(rdg_performance_train_100000.performance_measures)
+print("MODEL Train: Ridge Regression Classifier — Alpha = 100,000")
+print("\n* * * * * *")
+
+fits = [rdg_performance_train, rdg_performance_train_100, rdg_performance_train_1000, rdg_performance_train_10000,
+        rdg_performance_train_100000]
+labels = ['default_alpha', 'alpha_p100', 'alpha_1000',
+          'alpha_10000', 'alpha_100000']
+colors = ['b', 'g', 'r', 'c', 'm']
+
+for fit, label, color in zip(fits, labels, colors):
+    plt.plot(fit.performance_measures['FP'] / fit.performance_measures['Neg'],
+             fit.performance_measures['TP'] / fit.performance_measures['Pos'], color + 'o')  # use the color parameter
+    plt.text(fit.performance_measures['FP'] / fit.performance_measures['Neg'],
+             fit.performance_measures['TP'] / fit.performance_measures['Pos'], label)
+plt.axis([0, 1, 0, 1])
+plt.title('ROC plot: train set')
+plt.xlabel('False positive rate')
+plt.ylabel('True positive rate')
+plt.show()
+
+# MODEL: Random Forest Classifier
+
+# from sklearn.ensemble import RandomForestClassifier
+# rdf = RandomForestClassifier(max_depth=2, random_state=0)
+# rdf.fit(X_train, y_train)
+#
+# rdf_performance_train = BinaryClassificationPerformance(rdf.predict(X_train), y_train, 'rdf_train')
+# rdf_performance_train.compute_measures()
+# print(rdf_performance_train.performance_measures)
+# print("MODEL Train: Random Forest Classifier")
+# print("\n * * * * * *")
+
+# TEST: * * * * * * * * *
+# MODEL: ordinary least squares
+
+# ols_performance_test = BinaryClassificationPerformance(ols.predict(X_test), y_test, 'ols_test')
+# ols_performance_test.compute_measures()
+# print(ols_performance_test.performance_measures)
+# print("MODEL Test: ordinary least squares")
+# print("\n* * * * * *")
+
+# MODEL: SVM, linear
+
+# svm_performance_test = BinaryClassificationPerformance(svm.predict(X_test), y_test, 'svm_test')
+# svm_performance_test.compute_measures()
+# print(svm_performance_test.performance_measures)
+# print("MODEL Test: SVM linear")
+# print("\n* * * * * *")
+
+# MODEL: logistic regression
+
+# lgs_performance_test = BinaryClassificationPerformance(lgs.predict(X_test), y_test, 'lgs_test')
+# lgs_performance_test.compute_measures()
+# print(lgs_performance_test.performance_measures)
+# print("MODEL Test: logistic regression")
+# print("\n* * * * * *")
+
+# MODEL: Naive Bayes
+
+# nbs_performance_test = BinaryClassificationPerformance(nbs.predict(X_test), y_test, 'nbs_test')
+# nbs_performance_test.compute_measures()
+# print(nbs_performance_test.performance_measures)
+# print("MODEL Test: Naive Bayes")
+# print("\n* * * * * *")
+
+# MODEL: Perceptron
+
+# prc_performance_test = BinaryClassificationPerformance(prc.predict(X_test), y_test, 'prc_test')
+# prc_performance_test.compute_measures()
+# print(prc_performance_test.performance_measures)
+# print("MODEL Test: Perceptron")
+# print("\n* * * * * *")
+
+# MODEL: Ridge Regression Classifier
+
+print('training models')
+rdg_performance_test = BinaryClassificationPerformance(rdg.predict(X_test), y_test, 'rdg_test')
+rdg_performance_test.compute_measures()
+print(rdg_performance_test.performance_measures)
+print("MODEL Test: Ridge Regression Classifier— Default alpha ")
+print("\n* * * * * *")
+
+rdg_performance_test_100 = BinaryClassificationPerformance(rdg_alpha_100.predict(X_test), y_test, 'rdg_test')
+rdg_performance_test_100.compute_measures()
+print(rdg_performance_test_100.performance_measures)
+print("MODEL Test: Ridge Regression Classifier— Alpha 100")
+print("\n* * * * * *")
+
+rdg_performance_test_1000 = BinaryClassificationPerformance(rdg_alpha_1000.predict(X_test), y_test, 'rdg_test')
+rdg_performance_test_1000.compute_measures()
+print(rdg_performance_test_1000.performance_measures)
+print("MODEL Test: Ridge Regression Classifier— Alpha 1,000")
+print("\n* * * * * *")
+
+rdg_performance_test_10000 = BinaryClassificationPerformance(rdg_alpha_10000.predict(X_test), y_test, 'rdg_test')
+rdg_performance_test_10000.compute_measures()
+print(rdg_performance_test_10000.performance_measures)
+print("MODEL Test: Ridge Regression Classifier— Alpha 10,000")
+print("\n* * * * * *")
+
+rdg_performance_test_100000 = BinaryClassificationPerformance(rdg_alpha_100000.predict(X_test), y_test, 'rdg_test')
+rdg_performance_test_100000.compute_measures()
+print(rdg_performance_test_100000.performance_measures)
+print("MODEL Test: Ridge Regression Classifier— Alpha 100,000")
+print("\n* * * * * *")
+
+fits = [rdg_performance_test, rdg_performance_test_100, rdg_performance_test_1000, rdg_performance_test_10000,
+        rdg_performance_test_100000]
+labels = ['default_alpha', 'alpha_p100', 'alpha_1000',
+          'alpha_10000', 'alpha_100000']
+colors = ['b', 'g', 'r', 'c', 'm']
+
+for fit, label, color in zip(fits, labels, colors):
+    plt.plot(fit.performance_measures['FP'] / fit.performance_measures['Neg'],
+             fit.performance_measures['TP'] / fit.performance_measures['Pos'], color + 'o')  # use the color parameter
+    plt.text(fit.performance_measures['FP'] / fit.performance_measures['Neg'],
+             fit.performance_measures['TP'] / fit.performance_measures['Pos'], label)
+plt.axis([0, 1, 0, 1])
+plt.title('ROC plot: test set')
+plt.xlabel('False positive rate')
+plt.ylabel('True positive rate')
+plt.show()
+
+# #MODEL: Random Forest Classifier
+#
+# rdf_performance_test = BinaryClassificationPerformance(rdf.predict(X_test), y_test, 'rdf_test')
+# rdf_performance_test.compute_measures()
+# print(rdf_performance_test.performance_measures)
+# print("MODEL Test: Random Forest Classifier")
+# print("\n * * * * * *")
+
+# fits = [ols_performance_test, svm_performance_test, lgs_performance_test, nbs_performance_test, prc_performance_test, rdg_performance_test, rdf_performance_test]
+#
+# for fit in fits:
+#     plt.plot(fit.performance_measures['FP'] / fit.performance_measures['Neg'],
+#              fit.performance_measures['TP'] / fit.performance_measures['Pos'], 'bo')
+#     plt.text(fit.performance_measures['FP'] / fit.performance_measures['Neg'],
+#              fit.performance_measures['TP'] / fit.performance_measures['Pos'], fit.desc)
+# plt.axis([0, 1, 0, 1])
+# plt.title('ROC plot: test set')
+# plt.xlabel('False positive rate')
+# plt.ylabel('True positive rate')
+# plt.show()
